@@ -2,9 +2,6 @@
 name = "file_display"
 version = "0.1.0"
 edition = "2021"
-
 [dependencies]
 rayon = "1.10.0"
 aes = "0.8.4" 
-winapi = {version = "0.3", features = ["wincon", "winuser"]}
-eframe = "0.29.1"
